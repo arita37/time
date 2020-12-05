@@ -129,74 +129,6 @@ def load_datasset_m5(data_folder = "kaggle_data/m5_dataset"):
 
 
 #####################################################################################################
-#### Model metrics ##################################################################################
-def gluonts_model_eval(estimator=None, TD=None, cardinalities=None,
-                       istrain=True, ismetric=True, isplot=True, pars=None) :
-    from gluonts.model.deepar import DeepAREstimator
-    from gluonts.trainer import Trainer
-    p = pars
-    
-    if estimator is None :
-        estimator = DeepAREstimator(
-            prediction_length     = p.get("single_pred_length", 28),
-            freq                  = "D",
-            distr_output          = p.get("distr_output", None),
-            use_feat_static_cat   = True,
-            use_feat_dynamic_real = True,
-            cardinality           = p.get("cardinality", None),
-            trainer               = Trainer(
-            learning_rate         = p.get("lr",   1e-4),  # 1e-4,  #1e-3,
-            epochs                = p.get("epoch",   None),
-            num_batches_per_epoch = p.get("num_batches_per_epoch",   10),
-            batch_size            = p.get("batch_size",   8),
-            )
-        )
-    if istrain : estimator = estimator.train(TD.train)
-        
-    #### Evaluate  ########################################################################
-    from gluonts.evaluation.backtest import make_evaluation_predictions
-    forecast_it, ts_it = make_evaluation_predictions(dataset=TD.test, predictor=estimator,  
-                                                     num_samples= p.get("num_samples", 5))
-    forecasts,tss = list(forecast_it), list(ts_it) 
-
-    if isplot :   
-        plot_prob_forecasts( forecasts, tss, iiseries= p.get("ii_series",0) )
-      
-    ####### Metrics ######################################################################
-    agg_metrics, item_metrics = None, None
-    if ismetric :
-         agg_metrics, item_metrics = forecast_metrics(tss, forecasts,
-                                     quantiles=[0.1, 0.5, 0.9], show=True, dir_save=None) 
-
-    return  estimator,forecasts, tss, agg_metrics, item_metrics
-
-
-
-def gluonts_model_eval_all(dataset_name, estimator):
-    dataset = load_datasets(dataset_name)
-    estimator = estimator(
-        prediction_length=dataset.metadata.prediction_length,
-        freq=dataset.metadata.freq,
-        use_feat_static_cat=True,
-        cardinality=[
-            feat_static_cat.cardinality
-            for feat_static_cat in dataset.metadata.feat_static_cat
-        ],
-    )
-
-    log(f"evaluating {estimator} on {dataset}")
-    predictor                 = estimator.train(dataset.train)
-    forecast_it, ts_it        = make_evaluation_predictions( dataset.test, predictor=predictor, num_samples=100 )
-    agg_metrics, item_metrics = Evaluator()(  ts_it, forecast_it, num_series=len(dataset.test) )
-
-    log(agg_metrics)
-    eval_dict = agg_metrics
-    eval_dict["dataset"] = dataset_name
-    eval_dict["estimator"] = type(estimator).__name__
-    return eval_dict
-
-
-
 def forecast_metrics(tss, forecasts, quantiles=[0.1, 0.5, 0.9], show=True, dir_save=None) :
     from gluonts.evaluation import Evaluator
     evaluator = Evaluator(quantiles=quantiles)
@@ -468,6 +400,63 @@ def gluonts_save_to_file(path="", data=None):
             fp.write("\n".encode('utf-8'))
 
 
+
+def pandas_to_gluonts_multiseries(df_timeseries, df_dynamic, df_static,
+                                  pars={'submission':True,'single_pred_length':28,'submission_pred_length':10, 'n_timeseries':1,'start_date':"2011-01-29",'freq':"D"},
+                                  path_save=None , return_df=False) :
+    ###         NEW CODE    ######################
+    submission             = pars['submission']
+    single_pred_length     = pars['single_pred_length']
+    submission_pred_length = pars['submission_pred_length']
+    n_timeseries           = pars['n_timeseries']
+    start_date             = pars['start_date']
+    freq                   = pars['freq']
+    #start_date             = "2011-01-29"
+    ##########################################
+    train_dynamic_list = [np.array([None])]*n_timeseries
+    test_dynamic_list= [np.array([None])]*n_timeseries
+    train_static_list= [np.array([None])]*n_timeseries
+    test_static_list = [np.array([None])]*n_timeseries
+    cardinalities=  np.array([None])
+
+
+    if len(df_dynamic)>1:
+        train_dynamic_list, test_dynamic_list       = gluonts_create_dynamic(df_dynamic, submission=submission, single_pred_length=single_pred_length,
+                                                                         submission_pred_length=submission_pred_length, n_timeseries=n_timeseries, transpose=1)
+
+    #print(train_dynamic_list[1])
+    if len(df_static)>1:
+        train_static_list, test_static_list,cardinalities   = gluonts_create_static(df_static , submission=submission, single_pred_length=single_pred_length,
+                                                                         submission_pred_length=submission_pred_length, n_timeseries=n_timeseries, transpose=0)
+    #print(train_static_list[0])
+
+    train_timeseries_list, test_timeseries_list = gluonts_create_timeseries(df_timeseries, submission=submission, single_pred_length=single_pred_length,
+                                                                            submission_pred_length=submission_pred_length, n_timeseries=n_timeseries, transpose=0)
+    #print(train_timeseries_list[0])
+    start_dates_list = create_startdate(date=start_date, freq=freq, n_timeseries=n_timeseries)
+
+    train_ds = gluonts_create_dataset(train_timeseries_list, start_dates_list, train_dynamic_list, train_static_list, freq=freq )
+    test_ds  = gluonts_create_dataset(test_timeseries_list,  start_dates_list, test_dynamic_list,  test_static_list,  freq=freq )
+
+    if path_save :
+        gluonts_save_to_file(path_save + "/train/", train_ds)
+        gluonts_save_to_file(path_save + "/test/", test_ds)
+        with open(path_save+'/metadata.json', 'w') as f:
+          f.write(
+              json.dumps(
+                  {"cardinality":cardinalities.tolist(),
+                    "freq":freq,
+                    "prediction_length":single_pred_length,
+                  }
+                  )
+              )
+
+
+
+    if return_df :
+        return train_ds, test_ds, cardinalities
+
+
 #### Gluonts Converter ######################################################################
 def pandas_to_gluonts(df_timeseries, df_dynamic, df_static,
                                   pars={'submission':True,'single_pred_length':28,'submission_pred_length':10, 
@@ -641,6 +630,81 @@ def gluonts_json_check(gluonts_data_path, train_df, static_df) :
 
 
 
+
+
+
+
+
+#### Model metrics ##################################################################################
+def gluonts_model_eval(estimator=None, TD=None, cardinalities=None,
+                       istrain=True, ismetric=True, isplot=True, pars=None) :
+    from gluonts.model.deepar import DeepAREstimator
+    from gluonts.trainer import Trainer
+    p = pars
+
+    if estimator is None :
+        estimator = DeepAREstimator(
+            prediction_length     = p.get("single_pred_length", 28),
+            freq                  = "D",
+            distr_output          = p.get("distr_output", None),
+            use_feat_static_cat   = True,
+            use_feat_dynamic_real = True,
+            cardinality           = p.get("cardinality", None),
+            trainer               = Trainer(
+            learning_rate         = p.get("lr",   1e-4),  # 1e-4,  #1e-3,
+            epochs                = p.get("epoch",   None),
+            num_batches_per_epoch = p.get("num_batches_per_epoch",   10),
+            batch_size            = p.get("batch_size",   8),
+            )
+        )
+    if istrain : estimator = estimator.train(TD.train)
+
+    #### Evaluate  ########################################################################
+    from gluonts.evaluation.backtest import make_evaluation_predictions
+    forecast_it, ts_it = make_evaluation_predictions(dataset=TD.test, predictor=estimator,
+                                                     num_samples= p.get("num_samples", 5))
+    forecasts,tss = list(forecast_it), list(ts_it)
+
+    if isplot :
+        plot_prob_forecasts( forecasts, tss, ii_series= p.get("ii_series",0) )
+
+    ####### Metrics ######################################################################
+    agg_metrics, item_metrics = None, None
+    if ismetric :
+         agg_metrics, item_metrics = forecast_metrics(tss, forecasts,
+                                     quantiles=[0.1, 0.5, 0.9], show=True, dir_save=None)
+
+    return  estimator,forecasts, tss, agg_metrics, item_metrics
+
+
+
+def gluonts_model_eval_all(dataset_name, estimator):
+    dataset = load_datasets(dataset_name)
+    estimator = estimator(
+        prediction_length=dataset.metadata.prediction_length,
+        freq=dataset.metadata.freq,
+        use_feat_static_cat=True,
+        cardinality=[
+            feat_static_cat.cardinality
+            for feat_static_cat in dataset.metadata.feat_static_cat
+        ],
+    )
+
+    log(f"evaluating {estimator} on {dataset}")
+    predictor                 = estimator.train(dataset.train)
+    forecast_it, ts_it        = make_evaluation_predictions( dataset.test, predictor=predictor, num_samples=100 )
+    agg_metrics, item_metrics = Evaluator()(  ts_it, forecast_it, num_series=len(dataset.test) )
+
+    log(agg_metrics)
+    eval_dict = agg_metrics
+    eval_dict["dataset"] = dataset_name
+    eval_dict["estimator"] = type(estimator).__name__
+    return eval_dict
+
+
+
+
+########################################################################################################################
 def test_gluonts_to_pandas() :
     df_timeseries0, df_dynamic0, df_static0, pars_data  = load_datasset_m5()
     cardinalities = gluonts_static_cardinalities(df_static0, submission=1, single_pred_length=28, submission_pred_length=10, n_timeseries=1, transpose=1) 
@@ -651,7 +715,6 @@ def test_gluonts_to_pandas() :
                                  pars=pars_data,
                                   path_save=gluonts_datafolder , return_df=False) 
 
-    #################################################################################################################    
     from pathlib import Path
     gluonts_datafolder='time/data/gluonts_m5_02'
     dataset_path=Path(gluonts_datafolder)
