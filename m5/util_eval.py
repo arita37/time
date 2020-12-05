@@ -265,7 +265,7 @@ dfstat.to_csv(  dirmodel + f"/clf_stats.csv" )
 
 
 #####################################
-model_eval( clf_h, df[ (df.date >= datec )  & (df.date < datemax ) ],
+gluonts_model_eval( clf_h, df[ (df.date >= datec )  & (df.date < datemax ) ],
             colX = cols_h_train, coly= col_target, test_size=0.99, istrain = 0,
             use_eval= 1 )
 
